@@ -1,0 +1,5 @@
+numpy @ file:///croot/numpy_and_numpy_base_1701295049879/work/dist/numpy-1.26.2-cp312-cp312-linux_aarch64.whl#sha256=d07c73993a76ee21643197df96a818824dbc09c7987ede0b95ee6f6d36630ba1
+opencv-python==4.9.0.80
+pyserial @ file:///work/perseverance-python-buildout/croot/pyserial_1698888995630/work
+setuptools==68.2.2
+wheel==0.41.2
