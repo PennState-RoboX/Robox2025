@@ -328,10 +328,8 @@ def find_contours(config: CVParams, binary, frame, depth_frame, fps):
             rect_param = findVerticesOrder(coor)  # output order: [bl,tl,tr,br]
             rect = ImageRect(rect_param)
 
-            cv2.circle(frame, rect.points[0], 9,
-                       (255, 255, 255), -1)  # test armor_tr
-            cv2.circle(frame, rect.points[1], 9,
-                       (0, 255, 0), -1)  # test armor_tl
+            cv2.circle(frame, rect.points[0], 9,(255, 255, 255), -1)  # test armor_tr
+            cv2.circle(frame, rect.points[1], 9,(0, 255, 0), -1)  # test armor_tl
             # test bottom left
             cv2.circle(frame, rect.points[2], 9, (255, 255, 0), -1)
             # test bottom left
@@ -344,9 +342,10 @@ def find_contours(config: CVParams, binary, frame, depth_frame, fps):
                     and (rect.angle <= config.bar_z_angle_max and rect.angle >= -config.bar_z_angle_max):  # filer out undesired rectangle, only keep lightBar-like shape
 
                 first_data.append(rect)
-                box = np.int0(coor)
+                
+                if len(coor) >= 3:
                 # test countor minRectangle
-                cv2.drawContours(frame, [box], -1, (255, 0, 0), 3)
+                    cv2.drawContours(frame, [coor], -1, (255, 0, 0), 3)
 
         for i in range(len(first_data)):
             nextRect = i + 1
