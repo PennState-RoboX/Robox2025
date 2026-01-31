@@ -36,8 +36,10 @@ def check_sys_and_update_dll():
     currentsystem = platform.system()
     
     if currentsystem == 'Windows':
-        # Path to the DLL
-        MvCamCtrldllPath = r"C:\Users\sd190\OneDrive\Documents\GitHub\Robox2025\MVS\Win64_x64\MvCameraControl.dll"
+        # Get the directory of the current file (MVS folder)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        # Path to the DLL - relative to this file's location
+        MvCamCtrldllPath = os.path.join(current_dir, "Win64_x64", "MvCameraControl.dll")
         
         # Get the directory containing the DLL
         dll_directory = os.path.dirname(MvCamCtrldllPath)
