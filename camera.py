@@ -47,7 +47,7 @@ def main():
     stFrameInfo = MV_FRAME_OUT_INFO_EX()
     
     cam = MvCamera()
-    FPS = 60.0 #ENTER Hz HERE 
+    FPS = 120.0 #ENTER Hz HERE 
     cam_config(cam, stDevInfo, FPS)
 
     payload = MVCC_INTVALUE()
@@ -55,6 +55,10 @@ def main():
     payload_size = int(payload.nCurValue)
 
     data_buf = (ctypes.c_ubyte * payload_size)()
+
+    fps = 0
+    frame_count = 0
+    prev_time = cv2.getTickCount()
 
     while True:
         ret = cam.MV_CC_GetOneFrameTimeout(data_buf, payload_size, stFrameInfo, 1000)
@@ -65,6 +69,18 @@ def main():
 
         img_rgb = np.frombuffer(data_buf, dtype=np.uint8, count=w * h * 3).reshape(h, w, 3)
         img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+
+        frame_count += 1
+        current_time = cv2.getTickCount()
+        elapsed_time = (current_time - prev_time) / cv2.getTickFrequency()
+        
+        if elapsed_time >= 1.0:  # Update FPS every second
+            fps = frame_count / elapsed_time
+            frame_count = 0
+            prev_time = current_time
+
+        fps_text = f"FPS: {fps:.1f}"
+        cv2.putText(img_bgr, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
         cv2.imshow("HIK ROBOT Live (RGB)", img_bgr)
         if cv2.waitKey(1) & 0xFF == ord("q"):
