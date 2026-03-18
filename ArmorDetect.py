@@ -5,6 +5,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 import serial
+import threading
+import queue
 from UART_UTIL import send_data, get_imu
 from camera_source import CameraSource
 from kinematic_prediction import poly_predict
@@ -161,18 +163,14 @@ def read_morphology(cap, config: CVParams):
     #     close = cv2.getTrackbarPos('close', 'morphology_tuner')
     #     erode = cv2.getTrackbarPos('erode', 'morphology_tuner')
     #     dilate = cv2.getTrackbarPos('dilate', 'morphology_tuner')
-    # dst_open = open_binary(mask, open, open) currently not needed
-    dst_close = close_binary(
-        mask_processed, config.close_size, config.close_size)
-    dst_erode = erode_binary(dst_close, config.erode_size, config.erode_size)
-    dst_dilate = dilate_binary(
-        dst_erode, config.dilate_size, config.dilate_size)
-
-    if debug:
-        """
-        Display the final image after preprocessing
-        """
-        cv2.imshow("erode", dst_dilate)
+    # Optimized: Combined morphological operations
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.close_size, config.close_size))
+    erode_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.erode_size, config.erode_size))
+    dilate_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (config.dilate_size, config.dilate_size))
+    
+    dst_close = cv2.morphologyEx(mask_processed, cv2.MORPH_CLOSE, close_kernel)
+    dst_erode = cv2.erode(dst_close, erode_kernel)
+    dst_dilate = cv2.dilate(dst_erode, dilate_kernel)
 
     return dst_dilate, frame
 
@@ -302,7 +300,7 @@ class ImageRect:
 
 
 # find contours and main screening section
-def find_contours(config: CVParams, binary, frame, depth_frame, fps):
+def find_contours(config: CVParams, binary, frame, depth_frame, fps, debug_mode=False):
     global num
     contours, heriachy = cv2.findContours(
         binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -328,12 +326,12 @@ def find_contours(config: CVParams, binary, frame, depth_frame, fps):
             rect_param = findVerticesOrder(coor)  # output order: [bl,tl,tr,br]
             rect = ImageRect(rect_param)
 
-            cv2.circle(frame, rect.points[0], 9,(255, 255, 255), -1)  # test armor_tr
-            cv2.circle(frame, rect.points[1], 9,(0, 255, 0), -1)  # test armor_tl
-            # test bottom left
-            cv2.circle(frame, rect.points[2], 9, (255, 255, 0), -1)
-            # test bottom left
-            cv2.circle(frame, rect.points[3], 9, (0, 100, 250), -1)
+            # Debug visualization - only when debug mode is on
+            if debug_mode:
+                cv2.circle(frame, rect.points[0], 9,(255, 255, 255), -1)  # test armor_tr
+                cv2.circle(frame, rect.points[1], 9,(0, 255, 0), -1)  # test armor_tl
+                cv2.circle(frame, rect.points[2], 9, (255, 255, 0), -1)  # test bottom left
+                cv2.circle(frame, rect.points[3], 9, (0, 100, 250), -1)  # test bottom right
 
             """filer out undesired rectangle, only keep lightBar-like shape"""
             """90--->45-->0-center(horizontally)->90-->45-->0"""
@@ -343,8 +341,8 @@ def find_contours(config: CVParams, binary, frame, depth_frame, fps):
 
                 first_data.append(rect)
                 
-                if len(coor) >= 3:
-                # test countor minRectangle
+                # Debug visualization - only when debug mode is on
+                if debug_mode and len(coor) >= 3:
                     cv2.drawContours(frame, [coor], -1, (255, 0, 0), 3)
 
         for i in range(len(first_data)):
@@ -380,7 +378,7 @@ def find_contours(config: CVParams, binary, frame, depth_frame, fps):
                 
                 potential_Targets.append(target)
 
-                if debug:
+                if debug_mode:
                     '''collecting data set at below'''
                     armboard_width = 27
                     armboard_height = 25
@@ -533,6 +531,39 @@ def float_to_hex(f):
     ''' turn float to hex'''
     return ''.join([f'{byte:02x}' for byte in struct.pack('>f', f)])
 
+class IMUReader(threading.Thread):
+    """Background thread for non-blocking IMU data reading"""
+    def __init__(self, ser):
+        super().__init__(daemon=True)
+        self.ser = ser
+        self.data_queue = queue.Queue(maxsize=1)
+        self.running = True
+        self.last_data = (0, 0, 0)
+    
+    def run(self):
+        while self.running:
+            try:
+                imu_yaw, imu_pitch, imu_roll = get_imu(self.ser)
+                # Keep only latest data
+                try:
+                    self.data_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                self.data_queue.put((imu_yaw, imu_pitch, imu_roll))
+                self.last_data = (imu_yaw, imu_pitch, imu_roll)
+            except Exception as e:
+                pass
+    
+    def get_data(self):
+        """Get latest IMU data without blocking"""
+        try:
+            return self.data_queue.get_nowait()
+        except queue.Empty:
+            return self.last_data
+    
+    def stop(self):
+        self.running = False
+
 def decimalToHexSerial(Yaw, Pitch):
     # ��Yaw��Pitchת��ΪIEEE 754��׼�����ֽڸ�������ʾ����ת��Ϊʮ�������ַ���
     # turn Yaw and Pitch to IEEE 754 standard four-byte floating point representation and convert to hexadecimal string
@@ -598,8 +629,11 @@ def main(camera: CameraSource, target_color: TargetColor, show_stream: str):
     # Try to Open serial port for data transmission to STM32, if not found, continue without it
     try:
         ser = serial.Serial('/dev/ttyUSB0', 115200)
+        imu_reader = IMUReader(ser)
+        imu_reader.start()
     except Exception as e:
         ser = None
+        imu_reader = None
         print(f"Failed to open serial port: {str(e)}")
 
 
@@ -622,7 +656,7 @@ def main(camera: CameraSource, target_color: TargetColor, show_stream: str):
         binary, frame = read_morphology(color_image, cv_config)
 
         # get the list with all potential targets' info
-        potential_Targetsets = find_contours(cv_config, binary, frame, depth_image, fps)
+        potential_Targetsets = find_contours(cv_config, binary, frame, depth_image, fps, debug_mode=debug)
 
         if potential_Targetsets: # if dectection success
             
@@ -700,11 +734,11 @@ def main(camera: CameraSource, target_color: TargetColor, show_stream: str):
             Do Prediction
             '''
 
-            if ser is not None:
-                imu_yaw, imu_pitch, imu_roll = get_imu(ser)
-                print(f"imu data receive: {imu_yaw}, {imu_pitch}, {imu_roll}")
+            # Non-blocking IMU read - get latest available data
+            if imu_reader is not None:
+                imu_yaw, imu_pitch, imu_roll = imu_reader.get_data()
             else:
-                imu_yaw, imu_pitch, imu_roll = 20,20,20  # for test
+                imu_yaw, imu_pitch, imu_roll = 20, 20, 20  # for test
 
             
             imu_yaw *= -1.2
@@ -837,9 +871,13 @@ def main(camera: CameraSource, target_color: TargetColor, show_stream: str):
         cv2.putText(frame, str(fps), (90, 110),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, [0, 255, 0])
 
+        # Show debug info if debug mode is on
+        if debug:
+            if debug:
+                cv2.imshow("CV Parameters", frame)
 
         if show_stream == 'YES' or 'yes':
-            cv2.imshow("original", frame)
+            cv2.imshow("Armor Detection", frame)
             cv2.waitKey(1)
         else:
             pass
@@ -848,6 +886,11 @@ def main(camera: CameraSource, target_color: TargetColor, show_stream: str):
         endtime = time.time()
         fps = 1 / (endtime - startTime)
         print(fps)
+
+    # Cleanup
+    if imu_reader is not None:
+        imu_reader.stop()
+        imu_reader.join(timeout=1)
 
 
 if __name__ == "__main__":

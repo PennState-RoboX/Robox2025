@@ -74,7 +74,7 @@ def main():
         current_time = cv2.getTickCount()
         elapsed_time = (current_time - prev_time) / cv2.getTickFrequency()
         
-        if elapsed_time >= 1.0:  # Update FPS every second
+        if elapsed_time >= 1.0:
             fps = frame_count / elapsed_time
             frame_count = 0
             prev_time = current_time
