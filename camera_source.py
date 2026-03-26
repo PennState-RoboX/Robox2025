@@ -1,13 +1,78 @@
 import json
 import logging
+import ctypes
 from pathlib import Path
 from typing import Dict, Tuple, Optional
+
+import cv2
+import numpy as np
+
 from camera_params import camera_params, DepthSource
 from hik_driver import *
+from MVS.MvCameraControl_class import *
+from camera_blue_filter import apply_gamma, apply_blue_mask_best, load_env
 
 logger = logging.getLogger(__name__)
 
 RS_DEPTH_CAPTURE_RES = (640, 480)
+
+# HIK camera wrapper adapted from camera_blue_filter.py
+class HikCameraSource:
+    def __init__(self, active_cam_config: Dict, use_blue_filter: bool = False, fps: float = 60.0):
+        self.active_cam_config = active_cam_config
+        self.use_blue_filter = use_blue_filter
+        self.img_env = load_env() if use_blue_filter else None
+
+        device_list = MV_CC_DEVICE_INFO_LIST()
+        ret = MvCamera.MV_CC_EnumDevices(MV_USB_DEVICE | MV_GIGE_DEVICE, device_list)
+        if ret != 0 or device_list.nDeviceNum == 0:
+            raise RuntimeError("No HIK camera found.")
+
+        stDevInfo = ctypes.cast(device_list.pDeviceInfo[0], ctypes.POINTER(MV_CC_DEVICE_INFO)).contents
+
+        self.cam = MvCamera()
+        self.cam.MV_CC_CreateHandle(stDevInfo)
+        self.cam.MV_CC_OpenDevice(MV_ACCESS_Exclusive, 0)
+        self.cam.MV_CC_SetEnumValue("PixelFormat", PixelType_Gvsp_RGB8_Packed)
+        self.cam.MV_CC_SetEnumValue("ExposureAuto", 0)
+        self.cam.MV_CC_SetFloatValue("ExposureTime", self.active_cam_config.get('exposure', {}).get('blue', 5000.0))
+        self.cam.MV_CC_SetEnumValue("GainAuto", 0)
+        self.cam.MV_CC_SetFloatValue("Gain", 8.0)
+        self.cam.MV_CC_SetEnumValue("BalanceWhiteAuto", 1)
+        self.cam.MV_CC_SetEnumValue("TriggerMode", 0)
+        self.cam.MV_CC_SetBoolValue("AcquisitionFrameRateEnable", True)
+        self.cam.MV_CC_SetFloatValue("AcquisitionFrameRate", fps)
+        self.cam.MV_CC_StartGrabbing()
+
+        payload = MVCC_INTVALUE()
+        self.cam.MV_CC_GetIntValue("PayloadSize", payload)
+        self.payload_size = int(payload.nCurValue)
+        self.data_buf = (ctypes.c_ubyte * self.payload_size)()
+        self.frame_info = MV_FRAME_OUT_INFO_EX()
+
+    def get_frames(self):
+        ret = self.cam.MV_CC_GetOneFrameTimeout(self.data_buf, self.payload_size, self.frame_info, 1000)
+        if ret != 0:
+            return None, None
+
+        w = self.frame_info.nWidth
+        h = self.frame_info.nHeight
+
+        img_rgb = np.frombuffer(self.data_buf, dtype=np.uint8, count=w * h * 3).reshape(h, w, 3)
+        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+
+        if self.use_blue_filter:
+            gamma_img = apply_gamma(img_bgr)
+            filtered = apply_blue_mask_best(gamma_img, self.img_env)
+            return filtered, None
+
+        return img_bgr, None
+
+    def release(self):
+        self.cam.MV_CC_StopGrabbing()
+        self.cam.MV_CC_CloseDevice()
+        self.cam.MV_CC_DestroyHandle()
+
 
 # Unified image acquisition class for different types of cameras
 class CameraSource:

@@ -50,6 +50,49 @@ def cam_config(cam: MvCamera, stDevInfo, FPS: float):
     cam.MV_CC_SetFloatValue("AcquisitionFrameRate", FPS)
 
 
+def init_hik_camera(FPS: float = 60.0):
+    deviceList = MV_CC_DEVICE_INFO_LIST()
+    ret = MvCamera.MV_CC_EnumDevices(MV_USB_DEVICE | MV_GIGE_DEVICE, deviceList)
+    if ret != 0 or deviceList.nDeviceNum == 0:
+        raise RuntimeError("No USB camera found.")
+
+    stDevInfo = ctypes.cast(deviceList.pDeviceInfo[0], ctypes.POINTER(MV_CC_DEVICE_INFO)).contents
+    stFrameInfo = MV_FRAME_OUT_INFO_EX()
+
+    cam = MvCamera()
+    cam_config(cam, stDevInfo, FPS)
+
+    payload = MVCC_INTVALUE()
+    cam.MV_CC_GetIntValue("PayloadSize", payload)
+    payload_size = int(payload.nCurValue)
+    data_buf = (ctypes.c_ubyte * payload_size)()
+
+    return cam, payload_size, data_buf, stFrameInfo
+
+
+def read_hik_frame(cam, payload_size, data_buf, frame_info, use_blue_filter=True, img_env=None):
+    ret = cam.MV_CC_GetOneFrameTimeout(data_buf, payload_size, frame_info, 1000)
+    if ret != 0:
+        return None
+
+    w = frame_info.nWidth
+    h = frame_info.nHeight
+    img_rgb = np.frombuffer(data_buf, dtype=np.uint8, count=w * h * 3).reshape(h, w, 3)
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+
+    if use_blue_filter:
+        img_bgr = apply_gamma(img_bgr)
+        img_bgr = apply_blue_mask_best(img_bgr, img_env)
+
+    return img_bgr
+
+
+def close_hik_camera(cam):
+    cam.MV_CC_StopGrabbing()
+    cam.MV_CC_CloseDevice()
+    cam.MV_CC_DestroyHandle()
+
+
 def load_env():
     """Load image_env.png for background suppression (same as filters.py)."""
     base = Path(__file__).resolve().parent

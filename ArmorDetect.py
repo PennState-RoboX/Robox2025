@@ -9,6 +9,7 @@ import threading
 import queue
 from UART_UTIL import send_data, get_imu
 from camera_source import CameraSource
+from camera_blue_filter import init_hik_camera, read_hik_frame, close_hik_camera, load_env
 from kinematic_prediction import poly_predict
 import argparse
 import logging
@@ -919,8 +920,36 @@ if __name__ == "__main__":
     num = 0  # for collecting dataset, pictures' names
 
     # choose camera params
-    camera = CameraSource(camera_params['HIK MV-CS016-10UC General'], args.target_color.value,
-                          recording_source=args.recording_source, recording_dest=args.recording_dest)
-    
+    if args.recording_source is not None or args.recording_dest is not None:
+        camera = CameraSource(camera_params['HIK MV-CS016-10UC General'], args.target_color.value,
+                              recording_source=args.recording_source, recording_dest=args.recording_dest)
+    else:
+        cam, payload_size, data_buf, frame_info = init_hik_camera(FPS=120.0)
+        img_env = load_env()
+
+        class BlueFilterCamera:
+            def __init__(self, active_cam_config, cam, payload_size, data_buf, frame_info, img_env):
+                self.active_cam_config = active_cam_config
+                self._cam = cam
+                self._payload_size = payload_size
+                self._data_buf = data_buf
+                self._frame_info = frame_info
+                self._img_env = img_env
+
+            def get_frames(self):
+                color = read_hik_frame(self._cam, self._payload_size, self._data_buf, self._frame_info,
+                                       use_blue_filter=True, img_env=self._img_env)
+                return color, None
+
+            def release(self):
+                close_hik_camera(self._cam)
+
+        camera = BlueFilterCamera(camera_params['HIK MV-CS016-10UC General'], cam,
+                                  payload_size, data_buf, frame_info, img_env)
+
     active_cam_config = camera.active_cam_config
-    main(camera, args.target_color, args.show_stream)
+    try:
+        main(camera, args.target_color, args.show_stream)
+    finally:
+        if hasattr(camera, 'release'):
+            camera.release()
